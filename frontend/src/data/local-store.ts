@@ -1,3 +1,4 @@
+import { migrateGpuRows } from './gpu-domain'
 import { SEED_ROWS } from './seed'
 import type { EntryRow } from './types'
 
@@ -15,16 +16,36 @@ function readStorage(): Record<string, EntryRow[]> {
   }
   const raw = window.localStorage.getItem(STORAGE_KEY)
   if (!raw) {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback))
-    return fallback
+    const seeded = normalizeLoaded(fallback)
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded))
+    return seeded
   }
   try {
     const parsed = JSON.parse(raw) as Record<string, EntryRow[]>
-    return { ...fallback, ...parsed }
+    return normalizeLoaded({ ...fallback, ...parsed })
   } catch {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback))
-    return fallback
+    const seeded = normalizeLoaded(fallback)
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded))
+    return seeded
   }
+}
+
+// 读取时统一过一遍存量迁移：电源车的历史脏数据（结束供电没回状态/没累计时长）
+// 在这里一次性修复并落盘，后续既有记录都跟着新规则联动。
+function normalizeLoaded(data: Record<string, EntryRow[]>): Record<string, EntryRow[]> {
+  if (!data.gpu) {
+    return data
+  }
+  const migratedGpu = migrateGpuRows(data.gpu)
+  const changed = migratedGpu.some((row, index) => row !== data.gpu[index])
+  if (!changed) {
+    return data
+  }
+  const next = { ...data, gpu: migratedGpu }
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+  }
+  return next
 }
 
 let cache: Record<string, EntryRow[]> | null = null
@@ -49,7 +70,8 @@ export function saveRows(key: string, rows: EntryRow[]): void {
 }
 
 export function resetRows(key: string): EntryRow[] {
-  const rows = clone(SEED_ROWS[key] ?? [])
+  // 重置同样要走迁移：种子里带的遗留记录不能绕过回填直接进缓存。
+  const rows = key === 'gpu' ? migrateGpuRows(clone(SEED_ROWS[key] ?? [])) : clone(SEED_ROWS[key] ?? [])
   saveRows(key, rows)
   return rows
 }

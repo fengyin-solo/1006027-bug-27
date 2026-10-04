@@ -68,4 +68,10 @@ npm run build
 - 字段、状态、动作与流转目标集中在 `frontend/src/data/modules.ts`；示例数据在
   `frontend/src/data/seed.ts`。
 - 状态流转只允许在 `local-service.ts` 里改，页面组件不做业务判断。
+- 电源车的可用台数只有一个事实源：设备状态（`src/data/gpu-domain.ts`，`待命` 即可用）。
+  设备列表、资源调度、资源缺口、派发名单冲突判断都通过 `loadGpuAvailability()` /
+  `loadResplanSummary()` 同源取数，任何页面不得再自行维护一份「可用」口径。
+- 电源车合法链路：`待命 ⇄ 供电中`、`待命 → 待检修 → 待命`；供电中直接申请检修会被拦截。
+  「结束供电」幂等，重复点击只累计一次时长。存量未回状态/未累计时长的记录在数据读取时
+  按接机航班（到达时间）回填，见 `migrateGpuRows`。
 - 想回到初始数据：清掉浏览器里 `airport-ground-ops:entries` 这一项，或调用 `resetModule(模块)`。

@@ -1,5 +1,17 @@
 import { MODULE_BY_KEY } from '@/data/modules'
 import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
+import {
+  GPU_KEY,
+  applyGpuAction,
+  gpuSummary,
+} from '@/data/gpu-domain'
+import {
+  RESPLAN_KEY,
+  decorateResplanRow,
+  dispatchedPlanCount,
+  enrichResplanRow,
+  gpuGapCount,
+} from '@/data/resource-domain'
 import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
@@ -25,19 +37,36 @@ export function filterRows(rows: EntryRow[], filters: Record<string, string>): E
 
 export function listEntries(key: string, filters: Record<string, string> = {}): PageResult {
   const matched = filterRows(listRows(key), filters)
-  return { items: matched, total: matched.length, page: 1, size: matched.length }
+  // 资源调度页：资源缺口、派发名单状态一律读取时从电源车实时状态派生，页面拿到的就是同源结果。
+  const decorated = key === RESPLAN_KEY ? matched.map((row) => decorateResplanRow(row, listRows(GPU_KEY))) : matched
+  return { items: decorated, total: decorated.length, page: 1, size: decorated.length }
 }
 
 export function runAction(key: string, id: number, action: string): ActionResult {
   const meta = moduleMeta(key)
-  const target = meta.actionTargets[action]
-  if (!target) {
-    return { ok: false, message: `${meta.entity}没有登记「${action}」这个动作` }
-  }
   const rows = listRows(key)
   const index = rows.findIndex((row) => Number(row.id) === id)
   if (index < 0) {
     return { ok: false, message: `没有找到编号为 ${id} 的${meta.entity}` }
+  }
+
+  // 电源车：状态流转、跳级拦截、时长累计幂等全部走 gpu-domain，页面层不做业务判断。
+  if (key === GPU_KEY) {
+    const outcome = applyGpuAction(rows[index], action)
+    if (!outcome.ok) {
+      return { ok: false, message: outcome.message }
+    }
+    if (outcome.row) {
+      const next = [...rows]
+      next[index] = outcome.row
+      saveRows(key, next)
+    }
+    return { ok: true, message: outcome.message }
+  }
+
+  const target = meta.actionTargets[action]
+  if (!target) {
+    return { ok: false, message: `${meta.entity}没有登记「${action}」这个动作` }
   }
   const current = String(rows[index].status)
   if (current === target) {
@@ -56,6 +85,25 @@ export function runAction(key: string, id: number, action: string): ActionResult
   return { ok: true, message: `${meta.entity}已${action}，当前状态「${target}」` }
 }
 
+// 电源车可用台数的唯一查询出口：两个入口（设备列表、资源调度）都从这里取，口径必然对得上。
+export function loadGpuAvailability() {
+  const rows = listRows(GPU_KEY)
+  return gpuSummary(rows)
+}
+
+// 资源调度汇总：可用台数同源取数，缺口清单与派发冲突随设备状态实时联动。
+export function loadResplanSummary() {
+  const gpuRows = listRows(GPU_KEY)
+  const plans = listRows(RESPLAN_KEY)
+  const enriched = plans.map((row) => enrichResplanRow(row, gpuRows))
+  return {
+    availability: gpuSummary(gpuRows),
+    gapCount: gpuGapCount(plans, gpuRows),
+    dispatchedCount: dispatchedPlanCount(plans),
+    plans: enriched,
+  }
+}
+
 export function resetModule(key: string): PageResult {
   resetRows(key)
   return listEntries(key)
@@ -65,7 +113,8 @@ export function exportEntries(key: string): { filename: string; content: string 
   const meta = moduleMeta(key)
   const header = ['编号', ...meta.fields, '当前状态']
   const lines = [header.join(',')]
-  for (const row of listRows(key)) {
+  // 走 listEntries：调度模块导出的资源缺口与页面一致，都是从设备状态实时派生的值。
+  for (const row of listEntries(key).items) {
     lines.push([row.id, ...meta.fields.map((field) => row[field] ?? ''), row.status].join(','))
   }
   return { filename: `${meta.name}-清单.csv`, content: `\uFEFF${lines.join('\n')}` }
