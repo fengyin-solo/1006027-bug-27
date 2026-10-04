@@ -65,6 +65,8 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条地面电源记录</span>
+      <span>可用台数以设备状态「待命」为准，结束供电重复点击不重复累计时长</span>
+      <span v-if="noticeMessage" class="notice-text">{{ noticeMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -75,6 +77,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
+  gpuAvailability,
   listEntries,
   moduleMeta,
   runAction as applyAction,
@@ -85,13 +88,20 @@ const meta = moduleMeta('gpu')
 const columns = ["设备编号", "设备类型", "功率等级", "接机航班", "供电时长", "操作人员", "电缆检查", "设备状态"]
 const actions = ["接机供电", "结束供电", "申请检修"]
 const statuses = ["待命", "供电中", "待检修", "已停用"]
-const stats = [{"label": "在册电源车", "value": 0}, {"label": "供电中设备", "value": 0}, {"label": "待检修设备", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const noticeMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+// 统计卡与可用台数都按未筛选的全量设备状态实时汇总，跟资源调度页读的是同一份。
+const stats = ref<{ label: string; value: number }[]>([
+  { label: '在册电源车', value: 0 },
+  { label: '供电中设备', value: 0 },
+  { label: '待检修设备', value: 0 },
+  { label: '可用电源车', value: 0 },
+])
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -114,11 +124,13 @@ function openCreate() {
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
+  noticeMessage.value = ''
   const result = applyAction(meta.key, Number(row.id), action)
   if (!result.ok) {
     errorMessage.value = result.message
     return
   }
+  noticeMessage.value = result.message
   reload()
 }
 
@@ -128,6 +140,13 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    const all = listEntries(meta.key).items
+    stats.value = [
+      { label: '在册电源车', value: all.length },
+      { label: '供电中设备', value: all.filter((row) => String(row.status) === '供电中').length },
+      { label: '待检修设备', value: all.filter((row) => String(row.status) === '待检修').length },
+      { label: '可用电源车', value: gpuAvailability() },
+    ]
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '地面电源列表读取失败'
   }

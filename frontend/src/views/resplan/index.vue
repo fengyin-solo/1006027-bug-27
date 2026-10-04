@@ -65,6 +65,7 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条保障资源调度记录</span>
+      <span>资源缺口 = 车辆需求 − 可用电源车，可用台数以地面电源设备状态「待命」为准</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -75,6 +76,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
+  gpuAvailability,
   listEntries,
   moduleMeta,
   runAction as applyAction,
@@ -85,13 +87,19 @@ const meta = moduleMeta('resplan')
 const columns = ["计划编号", "保障时段", "机位需求", "车辆需求", "人员需求", "资源缺口", "调度人员", "计划状态"]
 const actions = ["提交审核", "下发计划", "作废计划"]
 const statuses = ["待编制", "待审核", "已下发", "已作废"]
-const stats = [{"label": "待编制计划", "value": 0}, {"label": "已下发计划", "value": 0}, {"label": "存在缺口的计划", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+// 统计卡按未筛选的全量计划汇总；可用电源车与地面电源页同源，两处读数一致。
+const stats = ref<{ label: string; value: number }[]>([
+  { label: '待编制计划', value: 0 },
+  { label: '已下发计划', value: 0 },
+  { label: '存在缺口的计划', value: 0 },
+  { label: '可用电源车', value: 0 },
+])
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -128,6 +136,13 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    const all = listEntries(meta.key).items
+    stats.value = [
+      { label: '待编制计划', value: all.filter((row) => String(row.status) === '待编制').length },
+      { label: '已下发计划', value: all.filter((row) => String(row.status) === '已下发').length },
+      { label: '存在缺口的计划', value: all.filter((row) => Number(row['资源缺口']) > 0).length },
+      { label: '可用电源车', value: gpuAvailability() },
+    ]
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保障资源调度列表读取失败'
   }
